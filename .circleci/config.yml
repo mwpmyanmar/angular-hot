@@ -1,0 +1,94 @@
+version: 2.1
+
+# jobs ဆိုတာက gitlab-ci မှာ ဆိုရင်တော့ stages လိုမျိုးပဲ ဖြစ့်ပါတယ်
+jobs:
+  build-prod:
+    docker:
+      - image: cimg/node:18.20.0-browsers # docker hub က image တွေ
+    steps:
+      - checkout
+      - restore_cache:
+          key: npm-cache-{{ checksum "package-lock.json"" }}
+          # key တခုထက်ပိုနေရင် keys array နဲ့ သုံးလို့ ရတယ်
+      - run: # run က command တွေ ရေးရမှာ ဖြစ်တယ် ၊ စောစော က local project မှာ ရေးခဲ့တဲ့ npm install , build , test စတာတွေ
+          name: Install Dependencies
+          command: npm install
+          # run လိုက်လို့ ထွက်လာတဲ့ ဖိုင် တချို့ကို cache သိမ်းထားလို့ ရတယ် , artifact လိုမျိုးပဲ
+      - save_cache:
+          paths:
+            - ~/.npm
+          key: npm-cache-{{ checksum "package-lock.json" }}
+
+      - run:
+          name: Building the application
+          command: npm run build:prod
+
+      - run:
+          name: Install ChromeHeadLess
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y libappindicator1 fonts-liberation libu2f-udev libvulkan1
+            wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+            sudo dpkg -i google-chrome-stable_current_amd64.deb
+            sudo apt-get install -f
+
+      # test လုပ်ဖို့ ဆိုရင် ci runner ဘက်မှာ chrome browser ရှိနေဖို့လိုအပ်မယ်
+      # အဲဒါကြောင့် npm run test မလုပ်ခင်မှာ chrome ကို install လုပ်မယ်
+      # ကျနော်တို့ local မှာ npm run test လုပ်တုန်းက ပေါ်လာသလိုမျိုး အတွက်
+      - run:
+          name: Run tests cases
+          command: npm run test:headless
+
+      # test run လို့ ရလာတဲ့ ဟာတွေကို သိမ်းထားလို့ ရတယ်
+
+      - store_test_results:
+          path: test-results
+
+      # build လုပ်လို့ ရလာတဲ့ workspace ဖိုင်တွေကို သိမ်းထားလို့ ရတယ်
+      - persist_to_workspace:
+          root: ~/project
+          paths:
+            - dist
+            - node_modules
+
+      # build တာရော ,test တာရော အဆင်ပြေတယ်ဆိုရင် deploy လုပ်မယ်
+      # ဒီတခါတော့ s3 ပေါ်ကို တင်မယ်
+
+      - run:
+          name: Install AWS cli
+          command:
+            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+            unzip awscliv2.zip
+            sudo ./aws/install
+
+      - run:
+          name: Deploy to s3
+          command: |
+            DIST_OUTPUT_DIR= $(find dist -maxdepth 1 -type d | awk 'NR==2')
+            aws s3 sync ${DIST_OUTPUT_DIR}/browser/ s3://$S3_BUCKET_NAME --delete
+      # dist/ directory တခုလုံးကို aws cli သုံးပြီး s3 ပေါ်ကို တင်မယ် --delete က အရင်ကဟာတွေကို ဖျက်ပြီး sync လုပ်မယ်
+      # dist-output-dir varaible က working directory  - ဥပမာ toh ကို နာမည်ပြောင်းလိုက်တဲ့ အခါ parent directory name ကို လိုက်ရှာပြီး auto detect ဖြစ်နေအောင်လို့
+
+workflows:
+  # workflows က ဘယ် stage မှာ ဘယ် jobs တွေကို လုပ်မလဲ သတ်မှတ်မယ်
+  version: 2
+  build_test_deploy:
+    jobs:
+      # jobs တွေက ထပ်ထည့်လို့ ရတယ် , ဥပမာ buidl-prod အပြင် test-dev jobs တခု ရှိခဲ့ရင် ထည့်ထားလိို့ရတယ်
+      - build-prod:
+
+          # requires:
+          # - test-dev , test-dev jobs အိုကေမှ build-prod jobs ကို လုပ်လို့ ရသလိုမျိုး သတ်မှတ်လို့ ရတယ်
+          # gitlab ci  မှာတုန်းက needs: - build လိုမျိုး
+
+          filters:
+            branches:
+              only:
+                - main
+                - master
+
+      # - build-dev: build-dev jobs ကို develop branch က push တဲ့ အချိန်မှာ အလုပ်လုပ်ဖို့ သတ်မှတ်ခဲ့လဲ ရတယ်
+      #     filters:
+      #       branches:
+      #         only:
+      #           - develop
